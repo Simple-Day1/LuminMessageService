@@ -1,0 +1,183 @@
+services:
+  # NATS Server for event bus and task queue
+  nats:
+    image: nats:2.10.3-alpine
+    container_name: lumin-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command:
+      - "-js"
+      - "-sd"
+      - "/data"
+      - "--max_payload"
+      - "10MB"
+      - "--debug"
+      - "--trace"
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: [ "CMD", "nats", "server", "info" ]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - lumin-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: lumin-postgres
+    environment:
+      POSTGRES_DB: LuminUserDatabase
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: (123)%111  # ⚠️ Измените на ваш пароль
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Удалите или проверьте путь к init.sql
+      # - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - lumin-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: lumin-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redis123  # ⚠️ Измените пароль
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - lumin-network
+
+  # Main Application (Litestar API)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lumin-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: LuminUserDatabase
+      DB_USER: postgres
+      DB_PASSWORD: (123)%111  # ⚠️ Должен совпадать с паролем PostgreSQL
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis123  # ⚠️ Должен совпадать с паролем Redis
+      REDIS_DB: 0
+
+      # NATS
+      NATS_URL: nats://nats:4222
+
+      # App
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      DEBUG: "true"
+      PYTHONPATH: /app
+    volumes:
+      # Используем относительный путь вместо абсолютного
+      - ./:/app
+    working_dir: /app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/users/health', timeout=2) or exit(1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - lumin-network
+    command: >
+      sh -c "
+      echo '🚀 Starting Lumin User Service...' &&
+      pip install -r requirements.txt &&
+      uvicorn LuminUserService.app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # Worker for Taskiq tasks
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lumin-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: LuminUserDatabase
+      DB_USER: postgres
+      DB_PASSWORD: (123)%111  # ⚠️ Исправьте на правильный пароль
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis123
+      REDIS_DB: 0
+
+      # NATS
+      NATS_URL: nats://nats:4222
+      WORKER_QUEUE: user_service
+
+      # App
+      APP_ENV: development
+      LOG_LEVEL: INFO
+      PYTHONPATH: /app
+    volumes:
+      - ./:/app
+    working_dir: /app
+    restart: unless-stopped
+    networks:
+      - lumin-network
+    command: >
+      sh -c "
+      echo '👷 Starting Taskiq worker...' &&
+      pip install -r requirements.txt &&
+      taskiq worker LuminUserService.app.infrastructure.tasks.taskiq_broker:get_taskiq_broker --reload
+      "
+
+volumes:
+  nats_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+networks:
+  lumin-network:
+    driver: bridge

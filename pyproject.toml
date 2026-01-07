@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lumin-user-service"
+name = "lumin-message-service"
 version = "0.1.0"
 description = "User management microservice with DDD/CQRS/Event Sourcing"
 readme = "README.md"
@@ -189,4 +189,5 @@ exclude = ["tests*", "docs*", "migrations*", "scripts*"]
 [project.entry-points."taskiq.scheduler_sources"]
 lumin = "LuminUserService.infrastructure.tasks.scheduler:get_scheduler_source"
 [project.entry-points."console_scripts"]
+
 lumin-cli = "LuminUserService.cli.main:cli"
